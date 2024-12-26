@@ -35,15 +35,15 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"strconv"
 
 	gzip "github.com/klauspost/pgzip"
 	"github.com/segmentio/encoding/json"
-	"github.com/sethgrid/pester"
 )
 
 var (
 	// Version of application.
-	Version = "0.7.20"
+	Version = "0.7.21"
 
 	ErrIndexNameRequired = errors.New("index name required")
 	ErrNoWorkers         = errors.New("no workers configured")
@@ -62,6 +62,7 @@ type Runner struct {
 	FileGzipped        bool
 	IdentifierField    string
 	IndexName          string
+	ApiKey             string
 	Mapping            string
 	MemProfile         string
 	NumWorkers         int
@@ -123,6 +124,7 @@ func (r *Runner) Run() (err error) {
 		Verbose:   r.Verbose,
 		Scheme:    "http", // deprecated
 		IDField:   r.IdentifierField,
+		ApiKey:    r.ApiKey,
 		Username:  r.Username,
 		Password:  r.Password,
 		Pipeline:  r.Pipeline,
@@ -184,13 +186,25 @@ func (r *Runner) Run() (err error) {
 	for i, _ := range options.Servers {
 		// Store number_of_replicas settings for restoration later.
 		doc, err := GetSettings(i, options)
+    	fmt.Println(doc)
 		if err != nil {
 			return err
 		}
 		// TODO(miku): Rework this.
-		numberOfReplicas := doc[options.Index].(map[string]interface{})["settings"].(map[string]interface{})["index"].(map[string]interface{})["number_of_replicas"]
-		if r.Verbose {
-			log.Printf("on shutdown, number_of_replicas will be set back to %s", numberOfReplicas)
+		var numberOfReplicas string
+		hidden := false
+		// Figure out if any indexes are hidden which limits what you get in the json and what you can set
+		for _, value := range doc {
+			hidden, _ = strconv.ParseBool(value.(map[string]interface{})["settings"].(map[string]interface{})["index"].(map[string]interface{})["hidden"].(string))
+			if hidden {
+				break
+			}
+		}
+		if ! hidden {
+			numberOfReplicas = doc[options.Index].(map[string]interface{})["settings"].(map[string]interface{})["index"].(map[string]interface{})["number_of_replicas"].(string)
+			if r.Verbose {
+				log.Printf("on shutdown, number_of_replicas will be set back to %s", numberOfReplicas)
+			}
 		}
 		if r.Verbose {
 			log.Printf("on shutdown, refresh_interval will be set back to %s", r.RefreshInterval)
@@ -202,11 +216,15 @@ func (r *Runner) Run() (err error) {
 				return
 			}
 			// Reset number of replicas.
-			if _, err = indexSettingsRequest(fmt.Sprintf(`{"index": {"number_of_replicas": %q}}`, numberOfReplicas), options); err != nil {
-				return
-			}
+			if ! hidden {
+				if _, err = indexSettingsRequest(fmt.Sprintf(`{"index": {"number_of_replicas": %q}}`, numberOfReplicas), options); err != nil {
+					return
+				}
+			}	
 			// Persist documents.
-			err = FlushIndex(i, options)
+			if ! hidden {
+				err = FlushIndex(i, options)
+			}
 		}()
 		// Realtime search.
 		resp, err := indexSettingsRequest(`{"index": {"refresh_interval": "-1"}}`, options)
@@ -286,34 +304,21 @@ func (r *Runner) Run() (err error) {
 	return nil
 }
 
-// indexSettingsRequest runs updates an index setting, given a body and
+// IndexSettingsRequest runs updates an index setting, given a body and
 // options. Body consist of the JSON document, e.g. `{"index":
-// {"refresh_interval": "1s"}}`.
+// {"refresh_interval": "5s"}}`.
 func indexSettingsRequest(body string, options Options) (*http.Response, error) {
-	r := strings.NewReader(body)
 
 	rand.Seed(time.Now().Unix())
 	server := options.Servers[rand.Intn(len(options.Servers))]
 	link := fmt.Sprintf("%s/%s/_settings", server, options.Index)
-
+	r := strings.NewReader(body)
 	req, err := http.NewRequest("PUT", link, r)
-	if err != nil {
-		return nil, err
-	}
-	// Auth handling.
-	if options.Username != "" && options.Password != "" {
-		req.SetBasicAuth(options.Username, options.Password)
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := pester.Do(req)
-	if err != nil {
-		return nil, err
-	}
+	resp, err := Make_request(req,options,err)
 	if options.Verbose {
-		log.Printf("applied setting: %s with status %s\n", body, resp.Status)
+		log.Printf("applied setting: %s with status %s to %s\n", body, resp.Status, link)
 	}
-	return resp, nil
+	return resp, err
 }
 
 // isJSON checks if a string is valid json.

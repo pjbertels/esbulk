@@ -49,6 +49,7 @@ type Options struct {
 	Verbose         bool
 	IDField         string
 	Scheme          string // http or https; deprecated, use: Servers.
+	ApiKey          string
 	Username        string
 	Password        string
 	Pipeline        string
@@ -101,6 +102,25 @@ func nestedStr(tokstr []string, docmap map[string]interface{}, currentID string)
 	}
 	return TokenVal
 
+}
+
+// make request
+func Make_request(req *http.Request, options Options, err error) (*http.Response, error) {
+	
+	if err != nil {
+		return nil, err
+	}
+	// Auth handling.
+	if options.ApiKey != "" {
+		req.Header.Set("Authorization", fmt.Sprintf("ApiKey %s", options.ApiKey))
+	}
+	if options.Username != "" && options.Password != "" {
+		req.SetBasicAuth(options.Username, options.Password)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := pester.Do(req)
+	return resp, err
 }
 
 // BulkIndex takes a set of documents as strings and indexes them into elasticsearch.
@@ -218,31 +238,23 @@ func BulkIndex(docs []string, options Options) error {
 	// still have failed: for that we need to decode the elasticsearch
 	// response.
 	req, err := http.NewRequest("POST", link, strings.NewReader(body))
+	resp, err := Make_request(req, options, err)
 	if err != nil {
 		return err
 	}
+	defer resp.Body.Close()
 
-	if options.Username != "" && options.Password != "" {
-		req.SetBasicAuth(options.Username, options.Password)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	response, err := pester.Do(req)
-	if err != nil {
-		return err
-	}
-	defer response.Body.Close()
-
-	if response.StatusCode >= 400 {
+	if resp.StatusCode >= 400 {
 		var buf bytes.Buffer
-		if _, err := io.Copy(&buf, response.Body); err != nil {
+		if _, err := io.Copy(&buf, resp.Body); err != nil {
 			return err
 		}
 		return fmt.Errorf("indexing failed with %d %s: %s",
-			response.StatusCode, http.StatusText(response.StatusCode), buf.String())
+			resp.StatusCode, http.StatusText(resp.StatusCode), buf.String())
 	}
 
 	var br BulkResponse
-	if err := json.NewDecoder(response.Body).Decode(&br); err != nil {
+	if err := json.NewDecoder(resp.Body).Decode(&br); err != nil {
 		return err
 	}
 	if br.HasErrors {
@@ -318,17 +330,7 @@ func PutMapping(options Options, body io.Reader) error {
 		log.Printf("applying mapping: %s", link)
 	}
 	req, err := http.NewRequest("PUT", link, body)
-	if err != nil {
-		return err
-	}
-	if options.Username != "" && options.Password != "" {
-		req.SetBasicAuth(options.Username, options.Password)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := pester.Do(req)
-	if err != nil {
-		return err
-	}
+	resp, err := Make_request(req, options, err)
 	if resp.StatusCode != 200 {
 		var buf bytes.Buffer
 		if _, err := io.Copy(&buf, resp.Body); err != nil {
@@ -349,38 +351,21 @@ func CreateIndex(options Options, body io.Reader) error {
 	link := fmt.Sprintf("%s/%s", server, options.Index)
 
 	req, err := http.NewRequest("GET", link, nil)
+	resp1, err := Make_request(req, options, err)
 	if err != nil {
 		return err
 	}
-
-	if options.Username != "" && options.Password != "" {
-		req.SetBasicAuth(options.Username, options.Password)
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := pester.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
+	defer resp1.Body.Close()
 
 	// Index already exists, return.
-	if resp.StatusCode == 200 {
+	if resp1.StatusCode == 200 {
 		return nil
 	}
 
 	req, err = http.NewRequest("PUT", fmt.Sprintf("%s/%s/", server, options.Index), body)
-
+	resp, _ := Make_request(req, options, err)
 	if err != nil {
 		return err
-	}
-	if options.Username != "" && options.Password != "" {
-		req.SetBasicAuth(options.Username, options.Password)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	resp, err = pester.Do(req)
-	if err != nil {
-		return nil
 	}
 	defer resp.Body.Close()
 
@@ -420,17 +405,7 @@ func DeleteIndex(options Options) error {
 	link := fmt.Sprintf("%s/%s", server, options.Index)
 
 	req, err := http.NewRequest("DELETE", link, nil)
-	if err != nil {
-		return err
-	}
-	if options.Username != "" && options.Password != "" {
-		req.SetBasicAuth(options.Username, options.Password)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := pester.Do(req)
-	if err != nil {
-		return err
-	}
+	resp, _ := Make_request(req, options, err)
 	if options.Verbose {
 		log.Printf("purged index: %s", resp.Status)
 	}

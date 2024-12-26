@@ -27,7 +27,6 @@ import (
 	"net/http"
 
 	"github.com/segmentio/encoding/json"
-	"github.com/sethgrid/pester"
 )
 
 // FlushIndex flushes index.
@@ -35,17 +34,7 @@ func FlushIndex(idx int, options Options) error {
 	server := options.Servers[idx]
 	link := fmt.Sprintf("%s/%s/_flush", server, options.Index)
 	req, err := http.NewRequest("POST", link, nil)
-	if err != nil {
-		return err
-	}
-	if options.Username != "" && options.Password != "" {
-		req.SetBasicAuth(options.Username, options.Password)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := pester.Do(req)
-	if err != nil {
-		return err
-	}
+	resp, err := Make_request(req, options, err)
 	if options.Verbose {
 		log.Printf("index flushed: %s\n", resp.Status)
 	}
@@ -58,14 +47,7 @@ func GetSettings(idx int, options Options) (map[string]interface{}, error) {
 	link := fmt.Sprintf("%s/%s/_settings", server, options.Index)
 
 	req, err := http.NewRequest("GET", link, nil)
-	if err != nil {
-		return nil, err
-	}
-	if options.Username != "" && options.Password != "" {
-		req.SetBasicAuth(options.Username, options.Password)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := pester.Do(req)
+	resp, err := Make_request(req, options, err)
 	if err != nil {
 		return nil, err
 	}
